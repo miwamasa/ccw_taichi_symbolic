@@ -39,7 +39,7 @@ from src.motion_generator import (
     generate_form_trajectory,
     chain_trajectories,
     mirror_trajectory,
-    ALL_JOINT_NAMES,
+    ALL_DOF_NAMES,
 )
 
 
@@ -179,7 +179,7 @@ def build_trajectory(
 
     if not trajectories:
         print("[ERROR] 軌道が1つも生成されませんでした")
-        return np.zeros((0, len(ALL_JOINT_NAMES))), [], []
+        return np.zeros((0, len(ALL_DOF_NAMES))), [], []
 
     # 全式を接続
     print(f"\n[接続] {len(trajectories)} 式を接続中...")
