@@ -186,14 +186,14 @@
       "chest_rx": 0.05
     },
     "転": {
-      "chest_rz": 0.20
+      "chest_ry": 0.20
     },
     "旋": {
-      "chest_rz": 0.35
+      "chest_ry": 0.35
     },
     "開": {
       "chest_rx":-0.05,
-      "chest_rz": 0.25
+      "chest_ry": 0.25
     },
     "沈": {
       "right_knee":-0.10,
