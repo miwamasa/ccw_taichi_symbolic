@@ -11,6 +11,7 @@ humanoid.urdf の実際の関節構造に対応:
 useFixedBase=True で重力落下を防ぎ、直立姿勢を維持する。
 """
 
+import math
 import time
 import numpy as np
 from typing import Dict, List, Optional
@@ -93,11 +94,14 @@ class TaichiSimulator:
             urdf_path = "humanoid/humanoid.urdf"
 
         # useFixedBase=True: ルートリンクを固定し、重力落下を防ぐ
+        # humanoid.urdf は Y-up 座標系 → X軸周りに pi/2 回転して Z-up に合わせる
+        # globalScaling=0.28: モデルスケール調整（足首が z=0.0m になるよう計算済み）
         self.robot_id = p.loadURDF(
             urdf_path,
-            basePosition=[0, 0, 0.97],
-            baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
+            basePosition=[0, 0, 0.956],
+            baseOrientation=p.getQuaternionFromEuler([math.pi / 2, 0, 0]),
             useFixedBase=True,
+            globalScaling=0.28,
         )
 
         # カメラ設定（斜め前から見る）
@@ -106,7 +110,7 @@ class TaichiSimulator:
                 cameraDistance=2.5,
                 cameraYaw=45,
                 cameraPitch=-15,
-                cameraTargetPosition=[0, 0, 1.0],
+                cameraTargetPosition=[0, 0, 0.9],
             )
 
         self._print_joint_info()
