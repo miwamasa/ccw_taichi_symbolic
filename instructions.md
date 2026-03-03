@@ -1,0 +1,7 @@
+# 背景
+これは、太極拳のモーションモデル生成を目的とするプロジェクトである
+
+specifications/taich_matrix.md にある、24式 隘路マトリクス（各式6フェーズ正規化）、を入力として、specifications/3dmodel_geneartor.mdのように、３Dモデルを生成し、specifications/3dmodel_simulation1.md、specifications/3dmodel_simulation2.mdのようなシミュレーションを行う。
+
+# 指示
+specifications下の資料を読んで、マトリックスからのモーションモデル生成、モーションモデルのシミュレータをそれぞれ作成する、簡化２４式を目標として、モーションをつなげたシミュレーションとして完成させること。IKも活用してね。
