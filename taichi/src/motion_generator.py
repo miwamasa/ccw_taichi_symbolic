@@ -1,47 +1,80 @@
 """
 motion_generator.py - モーション軌道生成モジュール
 
-記号マトリクスのフェーズイベント列から、関節角の時系列軌道（numpy配列）を生成する。
-CubicSpline で補間し、各式の連続性を確保する。
-式間の接続も担当する。
+実際の humanoid.urdf 関節構造に対応した DOF 設計:
+
+  REVOLUTE 関節 (4本):
+    right_elbow  (idx=4,  範囲 0 ~ π)
+    left_elbow   (idx=7,  範囲 0 ~ π)
+    right_knee   (idx=10, 範囲 -π ~ 0)  ← 負値で屈曲
+    left_knee    (idx=13, 範囲 -π ~ 0)
+
+  SPHERICAL 関節 (7個 × 3軸 euler = 21 DOF):
+    chest, right_shoulder, left_shoulder,
+    right_hip, right_ankle, left_hip, left_ankle
+
+合計 25 DOF。球面関節は euler[rx,ry,rz] で表現し、
+simulator.py でクォータニオンに変換して setJointMotorControlMultiDof を呼ぶ。
 """
 
 import json
 import numpy as np
 from scipy.interpolate import CubicSpline
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 
-from src.ik_solver import apply_ik_to_keyframe
+try:
+    from src.ik_solver import apply_ik_to_keyframe
+except ImportError:
+    from ik_solver import apply_ik_to_keyframe
 
+# ────────────────────────────────────────────────────────────
+# DOF 定義
+# ────────────────────────────────────────────────────────────
 
-# PyBullet humanoid.urdf の関節名リスト（既知の関節のみ使用）
-# 実際のURDFに存在する関節名を使う（simulator.py でマッピングを行う）
-ALL_JOINT_NAMES = [
-    "right_hip_x",
-    "right_hip_z",
-    "right_hip_y",
-    "right_knee",
-    "right_ankle_x",
-    "right_ankle_y",
-    "left_hip_x",
-    "left_hip_z",
-    "left_hip_y",
-    "left_knee",
-    "left_ankle_x",
-    "left_ankle_y",
-    "abdomen_z",
-    "abdomen_x",
-    "abdomen_y",
-    "right_shoulder1",
-    "right_shoulder2",
+# 回転関節（スカラー角）
+REVOLUTE_DOF_NAMES = [
     "right_elbow",
-    "left_shoulder1",
-    "left_shoulder2",
     "left_elbow",
+    "right_knee",
+    "left_knee",
 ]
 
-N_JOINTS = len(ALL_JOINT_NAMES)
-JOINT_INDEX = {name: i for i, name in enumerate(ALL_JOINT_NAMES)}
+# 球面関節（各 3 euler 軸: rx=roll, ry=pitch, rz=yaw）
+SPHERICAL_JOINT_NAMES = [
+    "chest",
+    "right_shoulder",
+    "left_shoulder",
+    "right_hip",
+    "right_ankle",
+    "left_hip",
+    "left_ankle",
+]
+
+SPHERICAL_DOF_NAMES = [
+    f"{j}_{ax}"
+    for j in SPHERICAL_JOINT_NAMES
+    for ax in ["rx", "ry", "rz"]
+]
+
+ALL_DOF_NAMES = REVOLUTE_DOF_NAMES + SPHERICAL_DOF_NAMES
+N_DOFS = len(ALL_DOF_NAMES)          # 4 + 7*3 = 25
+DOF_INDEX = {name: i for i, name in enumerate(ALL_DOF_NAMES)}
+
+# URDF 関節インデックス
+JOINT_IDX = {
+    "chest":          1,
+    "neck":           2,
+    "right_shoulder": 3,
+    "right_elbow":    4,
+    "left_shoulder":  6,
+    "left_elbow":     7,
+    "right_hip":      9,
+    "right_knee":     10,
+    "right_ankle":    11,
+    "left_hip":       12,
+    "left_knee":      13,
+    "left_ankle":     14,
+}
 
 
 def load_primitives(primitive_json_path: str) -> Dict:
@@ -54,51 +87,34 @@ def resolve_symbols(symbols: Dict[str, str],
                     primitives: Dict,
                     use_ik: bool = True) -> np.ndarray:
     """
-    記号辞書からターゲット関節角ベクトルを生成する。
-
-    Args:
-        symbols: {"歩型": "弓", "手法": "分", ...}
-        primitives: primitive_library.json の内容
-        use_ik: True の場合、手先IKで肩・肘角度を上書き
+    記号辞書からターゲット DOF ベクトルを生成する。
 
     Returns:
-        joint_angles: shape (N_JOINTS,) の関節角ベクトル（ラジアン）
+        shape (N_DOFS,) のベクトル（revolute はラジアン, spherical は euler 角ラジアン）
     """
-    target = {}
+    target: Dict[str, float] = {}
 
-    # 4つの主要記号要素からオフセットを加算
     for axis in ["歩型", "手法", "身法", "歩法"]:
         symbol = symbols.get(axis)
         if symbol and axis in primitives:
-            if symbol in primitives[axis]:
-                for joint, val in primitives[axis][symbol].items():
-                    if not joint.startswith("_"):
-                        target[joint] = target.get(joint, 0.0) + val
+            lib = primitives[axis]
+            if symbol in lib:
+                for dof, val in lib[symbol].items():
+                    if not dof.startswith("_"):
+                        target[dof] = target.get(dof, 0.0) + val
 
     # IK で手先位置から肩・肘角度を精密化
     if use_ik:
         hand_symbol = symbols.get("手法", "定")
         target = apply_ik_to_keyframe(target, hand_symbol)
 
-    # 関節角ベクトルに変換
-    q = np.zeros(N_JOINTS)
-    for joint, val in target.items():
-        if joint in JOINT_INDEX:
-            q[JOINT_INDEX[joint]] = val
+    # DOF ベクトルに変換
+    q = np.zeros(N_DOFS)
+    for dof, val in target.items():
+        if dof in DOF_INDEX:
+            q[DOF_INDEX[dof]] = val
 
     return q
-
-
-def get_timing_scale(symbols: Dict[str, str], primitives: Dict) -> float:
-    """呼吸・意念記号からタイミングスケールを計算する。"""
-    scale = 1.0
-    for axis in ["呼吸", "意念"]:
-        symbol = symbols.get(axis)
-        if symbol and axis in primitives:
-            if symbol in primitives[axis]:
-                ts = primitives[axis][symbol].get("_timing_scale", 1.0)
-                scale *= ts
-    return scale
 
 
 def generate_form_trajectory(events: List[Dict],
@@ -106,165 +122,111 @@ def generate_form_trajectory(events: List[Dict],
                               fps: int = 60,
                               use_ik: bool = True) -> np.ndarray:
     """
-    1つの式のフェーズイベント列から関節角軌道を生成する。
-
-    CubicSpline のノットを各フェーズ中点に配置し、
-    bc_type='clamped' でエンドポイントの速度を0にする。
-
-    Args:
-        events: parse_form() の出力
-        primitives: load_primitives() の出力
-        fps: サンプリング周波数
-        use_ik: True の場合 IK を使用
+    フェーズイベント列から DOF 軌道（CubicSpline 補間）を生成する。
 
     Returns:
-        trajectory: shape (N_frames, N_JOINTS) の関節角時系列
+        shape (N_frames, N_DOFS)
     """
     if not events:
-        return np.zeros((0, N_JOINTS))
+        return np.zeros((0, N_DOFS))
 
-    total_duration = events[-1]["t_end"]
-    total_frames = max(int(total_duration * fps), 1)
+    total_dur = events[-1]["t_end"]
+    n_frames  = max(int(total_dur * fps), 1)
 
-    # キーフレームを各フェーズ中点に配置
-    knot_times = []
-    knot_angles = []
+    # キーフレームをフェーズ中点に配置
+    knot_t = []
+    knot_q = []
+    for ev in events:
+        t_mid = (ev["t_start"] + ev["t_end"]) / 2.0
+        q = resolve_symbols(ev["symbols"], primitives, use_ik)
+        knot_t.append(t_mid)
+        knot_q.append(q)
 
-    for event in events:
-        t_mid = (event["t_start"] + event["t_end"]) / 2.0
-        q = resolve_symbols(event["symbols"], primitives, use_ik)
-        knot_times.append(t_mid)
-        knot_angles.append(q)
+    # 始点・終点アンカー（clamped 条件用）
+    knot_t = np.array([0.0] + knot_t + [total_dur])
+    knot_q = np.vstack([knot_q[0], np.array(knot_q), knot_q[-1]])
 
-    # 始点・終点にアンカーを追加（零速度条件のため）
-    knot_times = [0.0] + knot_times + [total_duration]
-    knot_angles = [knot_angles[0]] + knot_angles + [knot_angles[-1]]
+    # 時刻が単調増加になるよう最小間隔を保証
+    for i in range(1, len(knot_t)):
+        if knot_t[i] <= knot_t[i - 1]:
+            knot_t[i] = knot_t[i - 1] + 1e-3
 
-    knot_times = np.array(knot_times)
-    knot_angles = np.array(knot_angles)  # (K, N_JOINTS)
+    t_dense = np.linspace(0.0, total_dur, n_frames)
+    traj = np.zeros((n_frames, N_DOFS))
 
-    # 時刻の重複を避ける（最小間隔を確保）
-    for i in range(1, len(knot_times)):
-        if knot_times[i] <= knot_times[i - 1]:
-            knot_times[i] = knot_times[i - 1] + 1e-3
+    for j in range(N_DOFS):
+        cs = CubicSpline(knot_t, knot_q[:, j], bc_type="clamped")
+        traj[:, j] = cs(t_dense)
 
-    # 評価時刻
-    t_dense = np.linspace(0.0, total_duration, total_frames)
-
-    # 各関節について CubicSpline で補間
-    trajectory = np.zeros((total_frames, N_JOINTS))
-    for j in range(N_JOINTS):
-        cs = CubicSpline(knot_times, knot_angles[:, j], bc_type="clamped")
-        trajectory[:, j] = cs(t_dense)
-
-    return trajectory
+    return traj
 
 
 def chain_trajectories(trajectories: List[np.ndarray],
                         blend_frames: int = 30) -> np.ndarray:
     """
-    複数の式の軌道を滑らかに接続する。
-
-    式間のブレンドにコサインイーズを使い速度不連続を防ぐ。
-
-    Args:
-        trajectories: 各式の trajectory (shape: (N_i, N_JOINTS))
-        blend_frames: ブレンドに使うフレーム数（デフォルト30フレーム=0.5秒@60fps）
-
-    Returns:
-        full_trajectory: shape (Total_frames, N_JOINTS)
+    複数式の軌道をコサインイーズでブレンドしながら接続する。
     """
     if not trajectories:
-        return np.zeros((0, N_JOINTS))
-
+        return np.zeros((0, N_DOFS))
     if len(trajectories) == 1:
         return trajectories[0]
 
-    result = [trajectories[0]]
+    parts = [trajectories[0]]
+    for curr in trajectories[1:]:
+        prev = parts[-1]
+        if blend_frames > 0 and len(prev) and len(curr):
+            alpha = (1.0 - np.cos(np.pi * np.linspace(0, 1, blend_frames))) / 2.0
+            blend = (prev[-1] * (1 - alpha[:, None]) +
+                     curr[0]  *      alpha[:, None])
+            parts.append(blend)
+        parts.append(curr)
 
-    for i in range(1, len(trajectories)):
-        prev = trajectories[i - 1]
-        curr = trajectories[i]
-
-        if blend_frames > 0 and len(prev) > 0 and len(curr) > 0:
-            last_frame = prev[-1]
-            first_frame = curr[0]
-
-            # コサインイーズでブレンド
-            alpha = np.linspace(0.0, 1.0, blend_frames)
-            alpha = (1.0 - np.cos(np.pi * alpha)) / 2.0  # smoothstep
-
-            blend = (
-                last_frame[np.newaxis, :] * (1.0 - alpha[:, np.newaxis]) +
-                first_frame[np.newaxis, :] * alpha[:, np.newaxis]
-            )
-            result.append(blend)
-
-        result.append(curr)
-
-    return np.vstack(result)
+    return np.vstack(parts)
 
 
-def mirror_trajectory(trajectory: np.ndarray) -> np.ndarray:
-    """
-    左右の式を鏡像にする（左右対称な動作の生成に使用）。
+def mirror_trajectory(traj: np.ndarray) -> np.ndarray:
+    """左右の式を鏡像にする。"""
+    m = traj.copy()
 
-    左右の関節を入れ替え、側方成分の符号を反転する。
-    """
-    mirrored = trajectory.copy()
-
-    # 左右ペアを定義
     swap_pairs = [
-        ("right_hip_x",    "left_hip_x"),
-        ("right_hip_z",    "left_hip_z"),
-        ("right_hip_y",    "left_hip_y"),
-        ("right_knee",     "left_knee"),
-        ("right_ankle_x",  "left_ankle_x"),
-        ("right_ankle_y",  "left_ankle_y"),
-        ("right_shoulder1","left_shoulder1"),
-        ("right_shoulder2","left_shoulder2"),
-        ("right_elbow",    "left_elbow"),
+        ("right_elbow",       "left_elbow"),
+        ("right_knee",        "left_knee"),
+        ("right_shoulder_rx", "left_shoulder_rx"),
+        ("right_shoulder_ry", "left_shoulder_ry"),
+        ("right_shoulder_rz", "left_shoulder_rz"),
+        ("right_hip_rx",      "left_hip_rx"),
+        ("right_hip_ry",      "left_hip_ry"),
+        ("right_hip_rz",      "left_hip_rz"),
+        ("right_ankle_rx",    "left_ankle_rx"),
+        ("right_ankle_ry",    "left_ankle_ry"),
+        ("right_ankle_rz",    "left_ankle_rz"),
     ]
 
-    for r_name, l_name in swap_pairs:
-        if r_name in JOINT_INDEX and l_name in JOINT_INDEX:
-            ri = JOINT_INDEX[r_name]
-            li = JOINT_INDEX[l_name]
-            mirrored[:, ri] = trajectory[:, li].copy()
-            mirrored[:, li] = trajectory[:, ri].copy()
+    for a, b in swap_pairs:
+        if a in DOF_INDEX and b in DOF_INDEX:
+            ia, ib = DOF_INDEX[a], DOF_INDEX[b]
+            m[:, ia] = traj[:, ib].copy()
+            m[:, ib] = traj[:, ia].copy()
 
-    # 左右方向（x, z 回旋成分）の符号を反転
-    lateral_joints = ["right_hip_x", "left_hip_x", "right_hip_z", "left_hip_z",
-                      "abdomen_z", "right_shoulder2", "left_shoulder2"]
-    for name in lateral_joints:
-        if name in JOINT_INDEX:
-            mirrored[:, JOINT_INDEX[name]] *= -1.0
+    # 側方（rx, rz）成分の符号を反転
+    for name in ALL_DOF_NAMES:
+        if name.endswith("_rx") or name.endswith("_rz"):
+            m[:, DOF_INDEX[name]] *= -1.0
 
-    return mirrored
+    return m
 
 
 if __name__ == "__main__":
-    import sys
-    import os
+    import sys, os
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
     from src.matrix_parser import load_forms, parse_form
 
-    forms_path = "data/forms.json"
-    prim_path  = "data/primitive_library.json"
+    forms = load_forms("data/forms.json")
+    prims = load_primitives("data/primitive_library.json")
 
-    forms = load_forms(forms_path)
-    primitives = load_primitives(prim_path)
-
-    # 最初の式でテスト
     form = forms[1]  # 野馬分鬃
     events = parse_form(form)
-
-    print(f"テスト: 式{form['id']}「{form['name']}」")
-    print(f"  フェーズ数: {len(events)}")
-
-    traj = generate_form_trajectory(events, primitives, fps=60, use_ik=True)
-    print(f"  軌道形状: {traj.shape}")
-    print(f"  フレーム数: {traj.shape[0]} ({traj.shape[0]/60:.1f}秒 @60fps)")
-    print(f"  関節数: {traj.shape[1]}")
-    print(f"  関節名: {ALL_JOINT_NAMES[:5]}...")
+    traj = generate_form_trajectory(events, prims, fps=60, use_ik=True)
+    print(f"DOF数: {N_DOFS}")
+    print(f"DOF名: {ALL_DOF_NAMES}")
+    print(f"軌道形状: {traj.shape}  ({traj.shape[0]/60:.1f}秒 @60fps)")
