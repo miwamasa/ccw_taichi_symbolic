@@ -1,0 +1,261 @@
+{
+  "_comment": "記号→関節角オフセット辞書（ラジアン）。PyBullet humanoid.urdf の関節名に対応。",
+  "_joint_map": {
+    "right_hip_x": 0,
+    "right_hip_z": 1,
+    "right_hip_y": 2,
+    "right_knee": 3,
+    "right_ankle_x": 4,
+    "right_ankle_y": 5,
+    "left_hip_x": 6,
+    "left_hip_z": 7,
+    "left_hip_y": 8,
+    "left_knee": 9,
+    "left_ankle_x": 10,
+    "left_ankle_y": 11,
+    "abdomen_z": 12,
+    "abdomen_x": 13,
+    "abdomen_y": 14,
+    "right_shoulder1": 15,
+    "right_shoulder2": 16,
+    "right_elbow": 17,
+    "left_shoulder1": 18,
+    "left_shoulder2": 19,
+    "left_elbow": 20
+  },
+  "歩型": {
+    "虚": {
+      "right_hip_y": 0.05,
+      "right_knee": 0.15,
+      "left_hip_y": 0.35,
+      "left_knee": 0.6,
+      "left_hip_x": 0.05
+    },
+    "中": {
+      "right_hip_y": 0.15,
+      "right_knee": 0.3,
+      "left_hip_y": 0.15,
+      "left_knee": 0.3
+    },
+    "弓": {
+      "right_hip_y": 0.05,
+      "right_knee": 0.1,
+      "left_hip_y": 0.4,
+      "left_knee": 0.7,
+      "left_hip_x": -0.1,
+      "left_ankle_y": 0.1
+    },
+    "馬": {
+      "right_hip_y": 0.3,
+      "right_knee": 0.55,
+      "left_hip_y": 0.3,
+      "left_knee": 0.55,
+      "right_hip_x": 0.15,
+      "left_hip_x": 0.15
+    },
+    "独": {
+      "right_hip_y": 0.9,
+      "right_knee": 1.4,
+      "left_hip_y": 0.05,
+      "left_knee": 0.1
+    }
+  },
+  "歩法": {
+    "起": {},
+    "移": {},
+    "送": {},
+    "進": {},
+    "退": {},
+    "定": {}
+  },
+  "手法": {
+    "抱": {
+      "left_shoulder1": 0.25,
+      "left_shoulder2": 0.1,
+      "left_elbow": -0.5,
+      "right_shoulder1": 0.2,
+      "right_shoulder2": -0.1,
+      "right_elbow": -0.5
+    },
+    "掤": {
+      "left_shoulder1": 0.5,
+      "left_shoulder2": 0.15,
+      "left_elbow": -0.3,
+      "right_shoulder1": 0.3,
+      "right_shoulder2": -0.1,
+      "right_elbow": -0.35
+    },
+    "捋": {
+      "left_shoulder1": 0.4,
+      "left_shoulder2": -0.1,
+      "left_elbow": -0.4,
+      "right_shoulder1": 0.6,
+      "right_shoulder2": 0.2,
+      "right_elbow": -0.2
+    },
+    "擠": {
+      "left_shoulder1": 0.5,
+      "left_shoulder2": 0.2,
+      "left_elbow": -0.2,
+      "right_shoulder1": 0.5,
+      "right_shoulder2": -0.2,
+      "right_elbow": -0.2
+    },
+    "按": {
+      "left_shoulder1": 0.2,
+      "left_shoulder2": 0.0,
+      "left_elbow": -0.15,
+      "right_shoulder1": 0.2,
+      "right_shoulder2": 0.0,
+      "right_elbow": -0.15
+    },
+    "分": {
+      "left_shoulder1": 0.85,
+      "left_shoulder2": 0.1,
+      "left_elbow": -0.15,
+      "right_shoulder1": -0.1,
+      "right_shoulder2": -0.05,
+      "right_elbow": -0.05
+    },
+    "穿": {
+      "left_shoulder1": 0.3,
+      "left_shoulder2": 0.25,
+      "left_elbow": -0.1,
+      "right_shoulder1": 0.15,
+      "right_shoulder2": -0.2,
+      "right_elbow": -0.3
+    },
+    "雲": {
+      "left_shoulder1": 0.6,
+      "left_shoulder2": 0.15,
+      "left_elbow": -0.4,
+      "right_shoulder1": 0.6,
+      "right_shoulder2": -0.15,
+      "right_elbow": -0.4
+    },
+    "架": {
+      "left_shoulder1": 0.8,
+      "left_shoulder2": 0.0,
+      "left_elbow": -0.3,
+      "right_shoulder1": 0.1,
+      "right_shoulder2": 0.0,
+      "right_elbow": -0.2
+    },
+    "打": {
+      "left_shoulder1": 0.1,
+      "left_shoulder2": 0.05,
+      "left_elbow": -0.1,
+      "right_shoulder1": 0.5,
+      "right_shoulder2": 0.0,
+      "right_elbow": -0.1
+    },
+    "推": {
+      "left_shoulder1": 0.3,
+      "left_shoulder2": 0.0,
+      "left_elbow": -0.1,
+      "right_shoulder1": 0.5,
+      "right_shoulder2": 0.0,
+      "right_elbow": -0.1
+    },
+    "定": {
+      "left_shoulder1": 0.15,
+      "left_shoulder2": 0.0,
+      "left_elbow": -0.2,
+      "right_shoulder1": 0.15,
+      "right_shoulder2": 0.0,
+      "right_elbow": -0.2
+    }
+  },
+  "身法": {
+    "含": {
+      "abdomen_y": 0.05,
+      "abdomen_x": 0.03
+    },
+    "転": {
+      "abdomen_y": 0.2,
+      "abdomen_z": 0.05
+    },
+    "旋": {
+      "abdomen_y": 0.35,
+      "abdomen_z": 0.1
+    },
+    "開": {
+      "abdomen_y": 0.25,
+      "abdomen_z": 0.08
+    },
+    "沈": {
+      "abdomen_y": 0.1,
+      "abdomen_x": 0.05
+    },
+    "立": {
+      "abdomen_y": 0.0,
+      "abdomen_x": 0.0,
+      "abdomen_z": 0.0
+    }
+  },
+  "呼吸": {
+    "吸": {},
+    "変": {},
+    "呼": {},
+    "収": {}
+  },
+  "意念": {
+    "集": {},
+    "導": {},
+    "送": {},
+    "達": {},
+    "透": {},
+    "静": {}
+  },
+  "hand_ik_targets": {
+    "_comment": "体幹ローカル座標での手先目標位置 [x_forward, y_up, z_lateral]",
+    "抱": {
+      "left":  [0.25, 0.30, 0.15],
+      "right": [0.25, 0.30, -0.15]
+    },
+    "掤": {
+      "left":  [0.35, 0.40, 0.10],
+      "right": [0.20, 0.35, -0.05]
+    },
+    "捋": {
+      "left":  [0.20, 0.35, 0.20],
+      "right": [0.40, 0.30, -0.10]
+    },
+    "擠": {
+      "left":  [0.40, 0.35, 0.05],
+      "right": [0.40, 0.35, -0.05]
+    },
+    "按": {
+      "left":  [0.30, 0.20, 0.10],
+      "right": [0.30, 0.20, -0.10]
+    },
+    "分": {
+      "left":  [0.10, 0.55, 0.25],
+      "right": [0.10, -0.05, -0.25]
+    },
+    "穿": {
+      "left":  [0.40, 0.30, 0.20],
+      "right": [0.20, 0.15, -0.10]
+    },
+    "雲": {
+      "left":  [0.30, 0.40, 0.15],
+      "right": [0.30, 0.40, -0.15]
+    },
+    "架": {
+      "left":  [0.15, 0.55, 0.10],
+      "right": [0.20, 0.20, -0.15]
+    },
+    "打": {
+      "left":  [0.15, 0.20, 0.10],
+      "right": [0.45, 0.35, -0.05]
+    },
+    "推": {
+      "left":  [0.20, 0.30, 0.10],
+      "right": [0.45, 0.30, -0.05]
+    },
+    "定": {
+      "left":  [0.20, 0.25, 0.10],
+      "right": [0.20, 0.25, -0.10]
+    }
+  }
+}
