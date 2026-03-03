@@ -1,157 +1,141 @@
 """
 ik_solver.py - 逆運動学（IK）モジュール
 
-ikpy を使って腕の手先IKを解く。手法記号から手先目標位置を求め、
-肩・肘の関節角度に変換する。
+手法記号から手先目標位置を定義し、解析的 IK で肩・肘の DOF 角度を計算する。
 
-PyBullet humanoid.urdf の腕チェーン構造:
-    base -> ... -> chest -> right_shoulder1 -> right_shoulder2 -> right_elbow -> right_wrist
-                         -> left_shoulder1  -> left_shoulder2  -> left_elbow  -> left_wrist
+新しい DOF 名（motion_generator.py の DOF 定義に対応）:
+  left_shoulder_rx, left_shoulder_ry, left_shoulder_rz, left_elbow
+  right_shoulder_rx, right_shoulder_ry, right_shoulder_rz, right_elbow
 """
 
 import numpy as np
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
-# 手法記号 → 手先目標位置（胸部ローカル座標 [前方x, 側方y, 高さz] メートル）
+# 手法記号 → 手先目標位置（体幹ローカル座標 [前x, 左y, 上z] メートル）
 # 座標系: x=前方, y=左が正（左手側）, z=上方
 HAND_EE_TARGETS: Dict[str, Dict[str, np.ndarray]] = {
     "抱": {
-        "left":  np.array([0.25, +0.15, 0.30]),
-        "right": np.array([0.25, -0.15, 0.30]),
+        "left":  np.array([0.25,  0.15, 0.10]),
+        "right": np.array([0.25, -0.15, 0.10]),
     },
     "掤": {
-        "left":  np.array([0.35, +0.10, 0.40]),
-        "right": np.array([0.20, -0.05, 0.35]),
+        "left":  np.array([0.35,  0.10, 0.20]),
+        "right": np.array([0.20, -0.05, 0.15]),
     },
     "捋": {
-        "left":  np.array([0.20, +0.20, 0.35]),
-        "right": np.array([0.40, -0.10, 0.30]),
+        "left":  np.array([0.20,  0.25, 0.15]),
+        "right": np.array([0.40, -0.15, 0.10]),
     },
     "擠": {
-        "left":  np.array([0.40, +0.05, 0.35]),
-        "right": np.array([0.40, -0.05, 0.35]),
+        "left":  np.array([0.40,  0.05, 0.15]),
+        "right": np.array([0.40, -0.05, 0.15]),
     },
     "按": {
-        "left":  np.array([0.30, +0.10, 0.20]),
-        "right": np.array([0.30, -0.10, 0.20]),
+        "left":  np.array([0.30,  0.10, 0.00]),
+        "right": np.array([0.30, -0.10, 0.00]),
     },
     "分": {
-        "left":  np.array([0.10, +0.25, 0.55]),
-        "right": np.array([0.10, -0.25, -0.05]),
+        "left":  np.array([0.10,  0.20, 0.35]),
+        "right": np.array([0.10, -0.20,-0.10]),
     },
     "穿": {
-        "left":  np.array([0.40, +0.20, 0.30]),
-        "right": np.array([0.20, -0.10, 0.15]),
+        "left":  np.array([0.40,  0.20, 0.10]),
+        "right": np.array([0.20, -0.10, 0.00]),
     },
     "雲": {
-        "left":  np.array([0.30, +0.15, 0.40]),
-        "right": np.array([0.30, -0.15, 0.40]),
+        "left":  np.array([0.30,  0.20, 0.25]),
+        "right": np.array([0.30, -0.20, 0.25]),
     },
     "架": {
-        "left":  np.array([0.15, +0.10, 0.55]),
-        "right": np.array([0.20, -0.15, 0.20]),
+        "left":  np.array([0.15,  0.10, 0.40]),
+        "right": np.array([0.20, -0.15, 0.05]),
     },
     "打": {
-        "left":  np.array([0.15, +0.10, 0.20]),
-        "right": np.array([0.45, -0.05, 0.35]),
+        "left":  np.array([0.15,  0.10, 0.00]),
+        "right": np.array([0.45, -0.05, 0.15]),
     },
     "推": {
-        "left":  np.array([0.20, +0.10, 0.30]),
-        "right": np.array([0.45, -0.05, 0.30]),
+        "left":  np.array([0.20,  0.10, 0.10]),
+        "right": np.array([0.45, -0.05, 0.10]),
     },
     "定": {
-        "left":  np.array([0.20, +0.10, 0.25]),
-        "right": np.array([0.20, -0.10, 0.25]),
+        "left":  np.array([0.15,  0.10, 0.00]),
+        "right": np.array([0.15, -0.10, 0.00]),
     },
 }
 
-# IK を使わず primitive_library を直接使う記号
-IK_SKIP_SYMBOLS = {"定", "抱"}
+# IK を適用しない記号（プリミティブをそのまま使う）
+IK_SKIP_SYMBOLS = {"抱"}
 
-# 関節角リミット（ラジアン）
-JOINT_LIMITS = {
-    "left_shoulder1":  (-0.2, 1.5),
-    "left_shoulder2":  (-0.8, 0.8),
-    "left_elbow":      (-1.8, 0.0),
-    "right_shoulder1": (-0.2, 1.5),
-    "right_shoulder2": (-0.8, 0.8),
-    "right_elbow":     (-1.8, 0.0),
-}
+# 腕リンク長（humanoid.urdf スケール概算）
+UPPER_ARM = 0.26   # 上腕長 (m)
+FOREARM   = 0.24   # 前腕長 (m)
 
 
-def _clamp(val: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, val))
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
 
 
-def _target_to_arm_angles(target: np.ndarray, side: str) -> Dict[str, float]:
+def _arm_analytic_ik(target: np.ndarray, side: str) -> Dict[str, float]:
     """
-    目標手先位置から肩・肘の関節角度を解析的に近似する。
+    手先目標位置 [x,y,z] から肩・肘の DOF 角度を解析的に計算する。
 
-    ikpy を使う場合の代替として、ジオメトリから直接計算する簡易IK。
-    上腕長 = 0.28m, 前腕長 = 0.25m と仮定（humanoid.urdfスケール）。
+    DOF 名（新システム）:
+      {side}_shoulder_rx, {side}_shoulder_ry, {side}_shoulder_rz
+      {side}_elbow
 
     Args:
-        target: [x, y, z] 胸部ローカル座標での手先目標位置
+        target: [前x, 側y(左+), 上z]  (体幹ローカル m)
         side: "left" or "right"
-
-    Returns:
-        {joint_name: angle_rad}
     """
     x, y, z = target
 
-    # 右腕は y を反転（右側はマイナス方向）
+    # 右腕は y 方向を反転（右は -y が外側）
     if side == "right":
         y = -y
-        prefix = "right"
-    else:
-        prefix = "left"
 
-    upper_arm = 0.28  # 上腕長（m）
-    forearm   = 0.25  # 前腕長（m）
+    dist = np.linalg.norm([x, y, z])
+    dist = np.clip(dist, 0.05, UPPER_ARM + FOREARM - 0.01)
 
-    # 距離を計算
-    dist = np.sqrt(x**2 + y**2 + z**2)
-    dist = np.clip(dist, 0.05, upper_arm + forearm - 0.01)
+    # 余弦定理で肘角度（正値=曲げる）
+    cos_e = (UPPER_ARM**2 + FOREARM**2 - dist**2) / (2 * UPPER_ARM * FOREARM)
+    cos_e = np.clip(cos_e, -1.0, 1.0)
+    elbow = float(np.pi - np.arccos(cos_e))   # 0（伸ばす）～ π（完全屈曲）
 
-    # 余弦定理で肘角度を計算
-    cos_elbow = (upper_arm**2 + forearm**2 - dist**2) / (2 * upper_arm * forearm)
-    cos_elbow = np.clip(cos_elbow, -1.0, 1.0)
-    # 肘は曲がる方向（負の角度）
-    elbow_angle = -(np.pi - np.arccos(cos_elbow))
+    # 肩角度: ry = 前後方向の挙上, rx = 側方開き, rz = 回旋
+    shoulder_ry = float(np.arctan2(z, max(x, 0.01)))
+    shoulder_rx = float(np.arctan2(y, np.sqrt(x**2 + z**2)))
+    shoulder_rz = 0.0  # 回旋は記号から来る値のままにする
 
-    # 肩の角度: 前方向き(x)と高さ(z)から計算
-    shoulder1 = np.arctan2(z, x)  # 前方・高さ方向
-    shoulder2 = np.arctan2(y, np.sqrt(x**2 + z**2))  # 側方
+    # リミット
+    shoulder_ry = _clamp(shoulder_ry, -0.2, 1.6)
+    shoulder_rx = _clamp(shoulder_rx, -0.8, 0.8)
+    elbow       = _clamp(elbow,        0.0, 2.5)
 
-    # リミットを適用
-    shoulder1 = _clamp(shoulder1, *JOINT_LIMITS[f"{prefix}_shoulder1"])
-    shoulder2 = _clamp(shoulder2, *JOINT_LIMITS[f"{prefix}_shoulder2"])
-    elbow_angle = _clamp(elbow_angle, *JOINT_LIMITS[f"{prefix}_elbow"])
-
+    prefix = side
     return {
-        f"{prefix}_shoulder1": shoulder1,
-        f"{prefix}_shoulder2": shoulder2,
-        f"{prefix}_elbow": elbow_angle,
+        f"{prefix}_shoulder_ry": shoulder_ry,
+        f"{prefix}_shoulder_rx": shoulder_rx,
+        f"{prefix}_shoulder_rz": shoulder_rz,
+        f"{prefix}_elbow":       elbow,
     }
 
 
 def compute_arm_ik(hand_symbol: str) -> Optional[Dict[str, float]]:
     """
-    手法記号から左右の腕関節角度をIKで計算する。
+    手法記号から左右の腕 DOF 角度を IK で計算する。
 
     Returns:
-        {"left_shoulder1": ..., "left_elbow": ..., "right_shoulder1": ..., ...}
-        IK対象外の記号の場合は None を返す。
+        DOF 名 → angle のdict、または IK 対象外の場合 None。
     """
     if hand_symbol not in HAND_EE_TARGETS or hand_symbol in IK_SKIP_SYMBOLS:
         return None
 
     targets = HAND_EE_TARGETS[hand_symbol]
-    result = {}
+    result: Dict[str, float] = {}
 
-    for side in ["left", "right"]:
-        target = targets[side]
-        angles = _target_to_arm_angles(target, side)
+    for side in ("left", "right"):
+        angles = _arm_analytic_ik(targets[side], side)
         result.update(angles)
 
     return result
@@ -160,15 +144,14 @@ def compute_arm_ik(hand_symbol: str) -> Optional[Dict[str, float]]:
 def apply_ik_to_keyframe(joint_target: Dict[str, float],
                           hand_symbol: str) -> Dict[str, float]:
     """
-    プリミティブライブラリから得たキーフレームにIKを適用する。
-    IKの結果で肩・肘角度を上書きする。
+    プリミティブライブラリの DOF dict に IK の結果を上書きする。
 
     Args:
-        joint_target: primitive_library から解決した関節角辞書
+        joint_target: resolve_symbols() から得た DOF dict のコピー
         hand_symbol:  手法記号
 
     Returns:
-        IK適用後の関節角辞書（コピー）
+        IK 適用後の DOF dict（コピー）
     """
     result = dict(joint_target)
     ik_angles = compute_arm_ik(hand_symbol)
@@ -177,22 +160,12 @@ def apply_ik_to_keyframe(joint_target: Dict[str, float],
     return result
 
 
-def try_import_ikpy():
-    """ikpy が使用可能かチェック。使用可能なら True を返す。"""
-    try:
-        import ikpy  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
 if __name__ == "__main__":
-    # 動作確認テスト
-    for symbol in ["分", "掤", "雲", "按", "架"]:
-        angles = compute_arm_ik(symbol)
+    for sym in ["分", "掤", "雲", "按", "架", "打"]:
+        angles = compute_arm_ik(sym)
         if angles:
-            print(f"\n手法「{symbol}」のIK結果:")
-            for joint, angle in sorted(angles.items()):
-                print(f"  {joint}: {np.degrees(angle):.1f}°")
+            print(f"\n手法「{sym}」IK結果:")
+            for k, v in sorted(angles.items()):
+                print(f"  {k}: {np.degrees(v):.1f}°")
         else:
-            print(f"\n手法「{symbol}」: IKスキップ（primitiveを直接使用）")
+            print(f"\n手法「{sym}」: IKスキップ")

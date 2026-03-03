@@ -1,8 +1,14 @@
 """
 simulator.py - PyBullet シミュレータモジュール
 
-PyBullet を使って humanoid モデルに関節角軌道を再生する。
-PDポジションコントロールで各関節を駆動する。
+humanoid.urdf の実際の関節構造に対応:
+  SPHERICAL 関節 (7個): chest, right_shoulder, left_shoulder,
+                         right_hip, right_ankle, left_hip, left_ankle
+  REVOLUTE  関節 (4個): right_elbow, left_elbow, right_knee, left_knee
+  FIXED     関節 (3個): root, right_wrist, left_wrist (制御不要)
+
+球面関節は setJointMotorControlMultiDof + クォータニオンで制御。
+useFixedBase=True で重力落下を防ぎ、直立姿勢を維持する。
 """
 
 import time
@@ -15,101 +21,25 @@ try:
     PYBULLET_AVAILABLE = True
 except ImportError:
     PYBULLET_AVAILABLE = False
-    print("[WARNING] pybullet がインストールされていません。シミュレーションは実行できません。")
+    print("[WARNING] pybullet がインストールされていません: pip install pybullet")
 
-from src.motion_generator import ALL_JOINT_NAMES, JOINT_INDEX
-
-
-# PyBullet humanoid.urdf の関節名からインデックスへのマッピング
-# 実行時に build_joint_map() で動的に構築する
-_JOINT_MAP: Optional[Dict[str, int]] = None
-
-# primitive_library.json のキー名 → PyBullet URDF 関節名マッピング
-# （humanoid.urdf を確認して調整が必要な場合がある）
-CANONICAL_TO_URDF = {
-    "right_hip_x":    ["right_hip_x"],
-    "right_hip_z":    ["right_hip_z"],
-    "right_hip_y":    ["right_hip_y"],
-    "right_knee":     ["right_knee"],
-    "right_ankle_x":  ["right_ankle_x"],
-    "right_ankle_y":  ["right_ankle_y"],
-    "left_hip_x":     ["left_hip_x"],
-    "left_hip_z":     ["left_hip_z"],
-    "left_hip_y":     ["left_hip_y"],
-    "left_knee":      ["left_knee"],
-    "left_ankle_x":   ["left_ankle_x"],
-    "left_ankle_y":   ["left_ankle_y"],
-    "abdomen_z":      ["abdomen_z"],
-    "abdomen_x":      ["abdomen_x"],
-    "abdomen_y":      ["abdomen_y"],
-    "right_shoulder1":["right_shoulder1"],
-    "right_shoulder2":["right_shoulder2"],
-    "right_elbow":    ["right_elbow"],
-    "left_shoulder1": ["left_shoulder1"],
-    "left_shoulder2": ["left_shoulder2"],
-    "left_elbow":     ["left_elbow"],
-}
+try:
+    from src.motion_generator import (
+        ALL_DOF_NAMES, DOF_INDEX, N_DOFS,
+        REVOLUTE_DOF_NAMES, SPHERICAL_JOINT_NAMES, JOINT_IDX
+    )
+except ImportError:
+    from motion_generator import (
+        ALL_DOF_NAMES, DOF_INDEX, N_DOFS,
+        REVOLUTE_DOF_NAMES, SPHERICAL_JOINT_NAMES, JOINT_IDX
+    )
 
 
-def build_joint_map(robot_id: int) -> Dict[str, int]:
+def euler_to_quaternion(rx: float, ry: float, rz: float):
     """
-    ロードした humanoid URDF の全関節名→インデックスマッピングを構築する。
-
-    Args:
-        robot_id: PyBullet の robot body ID
-
-    Returns:
-        {"joint_name": index, ...}
+    euler 角（ラジアン）をクォータニオン [qx, qy, qz, qw] に変換する。
     """
-    name_to_idx = {}
-    for i in range(p.getNumJoints(robot_id)):
-        info = p.getJointInfo(robot_id, i)
-        joint_name = info[1].decode("utf-8")
-        joint_type = info[2]
-        if joint_type != p.JOINT_FIXED:
-            name_to_idx[joint_name] = i
-
-    print(f"[INFO] 可動関節数: {len(name_to_idx)}")
-    if len(name_to_idx) < 5:
-        print("[INFO] 全関節一覧:")
-        for i in range(p.getNumJoints(robot_id)):
-            info = p.getJointInfo(robot_id, i)
-            print(f"  [{i}] {info[1].decode()}: type={info[2]}")
-
-    return name_to_idx
-
-
-def resolve_joint_indices(joint_map: Dict[str, int]) -> Dict[str, int]:
-    """
-    canonical 名から実際の PyBullet 関節インデックスを解決する。
-
-    URDF の実際の関節名と canonical 名が異なる場合に部分一致で探す。
-    """
-    canonical_to_idx = {}
-
-    for canonical, urdf_candidates in CANONICAL_TO_URDF.items():
-        found = False
-        for candidate in urdf_candidates:
-            if candidate in joint_map:
-                canonical_to_idx[canonical] = joint_map[candidate]
-                found = True
-                break
-        if not found:
-            # 部分一致フォールバック
-            for actual_name, idx in joint_map.items():
-                if canonical.lower() in actual_name.lower():
-                    canonical_to_idx[canonical] = idx
-                    found = True
-                    break
-
-    mapped = len(canonical_to_idx)
-    total = len(CANONICAL_TO_URDF)
-    print(f"[INFO] 関節マッピング: {mapped}/{total} canonical 名を解決")
-    unmapped = [k for k in CANONICAL_TO_URDF if k not in canonical_to_idx]
-    if unmapped:
-        print(f"[WARN] 未解決の関節: {unmapped}")
-
-    return canonical_to_idx
+    return p.getQuaternionFromEuler([rx, ry, rz])
 
 
 class TaichiSimulator:
@@ -124,94 +54,126 @@ class TaichiSimulator:
         sim.close()
     """
 
-    def __init__(self, use_gui: bool = True):
-        """
-        Args:
-            use_gui: True の場合 GUI モード（可視化あり）
-        """
-        if not PYBULLET_AVAILABLE:
-            raise RuntimeError("pybullet がインストールされていません: pip install pybullet")
+    # 球面関節のPDゲイン（力: 各軸 N・m）
+    SPHERICAL_KP    = 0.5
+    SPHERICAL_KD    = 0.05
+    SPHERICAL_FORCE = 100.0
 
+    # 回転関節のPDゲイン
+    REVOLUTE_KP    = 0.5
+    REVOLUTE_KD    = 0.05
+    REVOLUTE_FORCE = 100.0
+
+    # 内部シミュレーション周波数
+    SIM_HZ = 240
+
+    def __init__(self, use_gui: bool = True):
+        if not PYBULLET_AVAILABLE:
+            raise RuntimeError("pybullet が必要です: pip install pybullet")
         self.use_gui = use_gui
         self.robot_id: Optional[int] = None
-        self.canonical_to_idx: Dict[str, int] = {}
         self._connected = False
 
-        # PDコントロールゲイン
-        self.position_gain = 0.5
-        self.velocity_gain = 0.1
-        self.max_force = 200.0
-
-        # 内部シミュレーション周波数（PyBullet デフォルト）
-        self.sim_hz = 240
-
     def setup(self, urdf_path: Optional[str] = None):
-        """
-        PyBullet を起動してシーンをセットアップする。
-
-        Args:
-            urdf_path: humanoid URDF のパス（None の場合 pybullet_data の humanoid を使用）
-        """
+        """PyBullet を起動し、シーンと humanoid をセットアップする。"""
         if self.use_gui:
-            self._physics_client = p.connect(p.GUI)
+            self._client = p.connect(p.GUI)
         else:
-            self._physics_client = p.connect(p.DIRECT)
-
+            self._client = p.connect(p.DIRECT)
         self._connected = True
 
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81)
-        p.setTimeStep(1.0 / self.sim_hz)
+        p.setTimeStep(1.0 / self.SIM_HZ)
 
         # 地面
-        self._plane_id = p.loadURDF("plane.urdf")
+        p.loadURDF("plane.urdf")
 
-        # Humanoid
         if urdf_path is None:
             urdf_path = "humanoid/humanoid.urdf"
 
+        # useFixedBase=True: ルートリンクを固定し、重力落下を防ぐ
         self.robot_id = p.loadURDF(
             urdf_path,
-            basePosition=[0, 0, 0.95],
+            basePosition=[0, 0, 0.97],
             baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
-            useFixedBase=False,
+            useFixedBase=True,
         )
 
-        # 関節マップを構築
-        joint_map = build_joint_map(self.robot_id)
-        self.canonical_to_idx = resolve_joint_indices(joint_map)
-
-        # カメラ設定
+        # カメラ設定（斜め前から見る）
         if self.use_gui:
             p.resetDebugVisualizerCamera(
                 cameraDistance=2.5,
-                cameraYaw=30,
-                cameraPitch=-20,
-                cameraTargetPosition=[0, 0, 1.0]
+                cameraYaw=45,
+                cameraPitch=-15,
+                cameraTargetPosition=[0, 0, 1.0],
             )
 
-        print(f"[INFO] PyBullet シミュレータ起動完了")
-        print(f"[INFO] Humanoid: {self.robot_id}, 地面: {self._plane_id}")
+        self._print_joint_info()
+        print(f"[INFO] Humanoid ロード完了 (useFixedBase=True, z=0.97m)")
 
-    def apply_joint_angles(self, joint_angle_vec: np.ndarray):
-        """
-        関節角ベクトルを PyBullet の PD コントローラに設定する。
+    def _print_joint_info(self):
+        """デバッグ用: 全関節情報を表示。"""
+        type_names = {0: "REVOLUTE", 1: "PRISMATIC", 2: "SPHERICAL",
+                      3: "PLANAR",   4: "FIXED"}
+        print(f"\n{'Idx':>4}  {'Name':<25}  {'Type':<10}  {'Lo':>7}  {'Hi':>7}")
+        for i in range(p.getNumJoints(self.robot_id)):
+            info = p.getJointInfo(self.robot_id, i)
+            name  = info[1].decode()
+            jtype = type_names.get(info[2], str(info[2]))
+            lo, hi = info[8], info[9]
+            print(f"{i:>4}  {name:<25}  {jtype:<10}  {lo:>7.3f}  {hi:>7.3f}")
+        print()
 
-        Args:
-            joint_angle_vec: shape (N_JOINTS,) の関節角ベクトル（ラジアン）
+    def apply_dof_vector(self, dof_vec: np.ndarray):
         """
-        for canonical_name, idx in self.canonical_to_idx.items():
-            if canonical_name in JOINT_INDEX:
-                angle = float(joint_angle_vec[JOINT_INDEX[canonical_name]])
-                p.setJointMotorControl2(
-                    self.robot_id,
-                    idx,
-                    p.POSITION_CONTROL,
-                    targetPosition=angle,
-                    positionGain=self.position_gain,
-                    velocityGain=self.velocity_gain,
-                    force=self.max_force,
-                )
+        DOF ベクトル（25次元）を PyBullet 関節コントローラに設定する。
+
+        - REVOLUTE 関節: setJointMotorControl2 (スカラー角度)
+        - SPHERICAL 関節: setJointMotorControlMultiDof (クォータニオン)
+        """
+        # ── REVOLUTE 関節 ──────────────────────────────────────
+        for dof_name in REVOLUTE_DOF_NAMES:
+            if dof_name not in JOINT_IDX or dof_name not in DOF_INDEX:
+                continue
+            joint_idx = JOINT_IDX[dof_name]
+            angle     = float(dof_vec[DOF_INDEX[dof_name]])
+            p.setJointMotorControl2(
+                self.robot_id,
+                joint_idx,
+                p.POSITION_CONTROL,
+                targetPosition=angle,
+                positionGain=self.REVOLUTE_KP,
+                velocityGain=self.REVOLUTE_KD,
+                force=self.REVOLUTE_FORCE,
+            )
+
+        # ── SPHERICAL 関節 ─────────────────────────────────────
+        for joint_name in SPHERICAL_JOINT_NAMES:
+            if joint_name not in JOINT_IDX:
+                continue
+            joint_idx = JOINT_IDX[joint_name]
+
+            # euler 3成分を取得
+            rx_key = f"{joint_name}_rx"
+            ry_key = f"{joint_name}_ry"
+            rz_key = f"{joint_name}_rz"
+            rx = float(dof_vec[DOF_INDEX[rx_key]]) if rx_key in DOF_INDEX else 0.0
+            ry = float(dof_vec[DOF_INDEX[ry_key]]) if ry_key in DOF_INDEX else 0.0
+            rz = float(dof_vec[DOF_INDEX[rz_key]]) if rz_key in DOF_INDEX else 0.0
+
+            quat = euler_to_quaternion(rx, ry, rz)
+
+            p.setJointMotorControlMultiDof(
+                self.robot_id,
+                joint_idx,
+                p.POSITION_CONTROL,
+                targetPosition=quat,
+                targetVelocity=[0.0, 0.0, 0.0],
+                positionGain=self.SPHERICAL_KP,
+                velocityGain=self.SPHERICAL_KD,
+                force=[self.SPHERICAL_FORCE] * 3,
+            )
 
     def play(self,
              trajectory: np.ndarray,
@@ -223,50 +185,45 @@ class TaichiSimulator:
         軌道を再生する。
 
         Args:
-            trajectory: shape (N_frames, N_JOINTS) の関節角時系列
+            trajectory: shape (N_frames, N_DOFS) の DOF 時系列
             fps: 再生フレームレート
-            form_start_frames: 各式の開始フレームインデックス（オプション）
-            form_names: 各式の名前（表示用オプション）
+            form_start_frames: 各式の開始フレームインデックス（表示用）
+            form_names: 各式の名前（表示用）
             loop: True の場合ループ再生
         """
         if self.robot_id is None:
             raise RuntimeError("setup() を先に呼んでください")
 
-        dt = 1.0 / fps
-        steps_per_frame = max(1, int(self.sim_hz / fps))
+        dt               = 1.0 / fps
+        steps_per_frame  = max(1, int(self.SIM_HZ / fps))
+        form_frame_set   = set(form_start_frames) if form_start_frames else set()
+        n_frames         = trajectory.shape[0]
 
-        # 式名の表示用セット
-        form_frame_set = set(form_start_frames) if form_start_frames else set()
-        form_idx = 0
-
-        n_frames = trajectory.shape[0]
-        total_time = n_frames / fps
-        print(f"[INFO] 再生開始: {n_frames} フレーム ({total_time:.1f}秒 @{fps}fps)")
+        print(f"[INFO] 再生開始: {n_frames} フレーム "
+              f"({n_frames/fps:.1f}秒 @{fps}fps)")
 
         try:
             while True:
                 start_wall = time.time()
+                for fi in range(n_frames):
+                    # 式切り替わりを表示
+                    if form_start_frames and fi in form_frame_set:
+                        idx = form_start_frames.index(fi)
+                        name = form_names[idx] if form_names else f"式{idx+1}"
+                        t_sec = fi / fps
+                        print(f"  [{t_sec:6.1f}s] {name}")
 
-                for frame_idx in range(n_frames):
-                    # 式の切り替わりを表示
-                    if form_start_frames and frame_idx in form_frame_set:
-                        idx_in_list = form_start_frames.index(frame_idx)
-                        name = form_names[idx_in_list] if form_names else f"式{idx_in_list+1}"
-                        print(f"  [{frame_idx/fps:.1f}s] {name}")
+                    self.apply_dof_vector(trajectory[fi])
 
-                    # 関節角を設定
-                    self.apply_joint_angles(trajectory[frame_idx])
-
-                    # シミュレーションステップ
                     for _ in range(steps_per_frame):
                         p.stepSimulation()
 
-                    # 実時間同期
+                    # 実時間同期（GUI モードのみ）
                     if self.use_gui:
-                        elapsed = time.time() - start_wall - frame_idx * dt
-                        sleep_time = dt - elapsed % dt
-                        if sleep_time > 0:
-                            time.sleep(sleep_time)
+                        target_t = start_wall + (fi + 1) * dt
+                        sleep_t  = target_t - time.time()
+                        if sleep_t > 0:
+                            time.sleep(sleep_t)
 
                 if not loop:
                     break
@@ -280,9 +237,8 @@ class TaichiSimulator:
     def close(self):
         """PyBullet 接続を切断する。"""
         if self._connected:
-            p.disconnect(self._physics_client)
+            p.disconnect(self._client)
             self._connected = False
-            print("[INFO] PyBullet 接続を切断しました")
 
     def __enter__(self):
         return self
@@ -292,10 +248,7 @@ class TaichiSimulator:
 
 
 def check_urdf_joints(urdf_path: Optional[str] = None):
-    """
-    URDF の全関節名を表示するデバッグ用関数。
-    初回実行時にどの関節名が利用可能かを確認するために使う。
-    """
+    """URDF の全関節名を表示するデバッグ用関数。"""
     if not PYBULLET_AVAILABLE:
         print("pybullet が利用できません")
         return
@@ -307,32 +260,21 @@ def check_urdf_joints(urdf_path: Optional[str] = None):
         urdf_path = "humanoid/humanoid.urdf"
 
     robot = p.loadURDF(urdf_path)
+    type_names = {0:"REVOLUTE", 1:"PRISMATIC", 2:"SPHERICAL",
+                  3:"PLANAR",   4:"FIXED"}
 
     print(f"\n=== {urdf_path} の関節一覧 ===")
-    print(f"{'Index':>6}  {'Name':<30}  {'Type':<12}  {'Lower':>8}  {'Upper':>8}")
-    print("-" * 70)
-
-    type_names = {
-        0: "REVOLUTE",
-        1: "PRISMATIC",
-        2: "SPHERICAL",
-        3: "PLANAR",
-        4: "FIXED",
-    }
-
+    print(f"{'Idx':>4}  {'Name':<25}  {'Type':<10}  {'Lower':>8}  {'Upper':>8}")
+    print("-" * 65)
     for i in range(p.getNumJoints(robot)):
-        info = p.getJointInfo(robot, i)
-        idx = info[0]
-        name = info[1].decode("utf-8")
+        info  = p.getJointInfo(robot, i)
+        name  = info[1].decode()
         jtype = type_names.get(info[2], str(info[2]))
-        lower = info[8]
-        upper = info[9]
-        if info[2] != 4:  # FIXED でないもの
-            print(f"{idx:>6}  {name:<30}  {jtype:<12}  {lower:>8.3f}  {upper:>8.3f}")
+        lo, hi = info[8], info[9]
+        print(f"{i:>4}  {name:<25}  {jtype:<10}  {lo:>8.3f}  {hi:>8.3f}")
 
     p.disconnect(client)
 
 
 if __name__ == "__main__":
-    print("PyBullet humanoid.urdf 関節確認:")
     check_urdf_joints()
